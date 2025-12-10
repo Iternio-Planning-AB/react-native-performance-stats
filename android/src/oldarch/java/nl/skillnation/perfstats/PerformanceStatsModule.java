@@ -2,9 +2,11 @@ package nl.skillnation.perfstats;
 
 import androidx.annotation.NonNull;
 
+import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.WritableMap;
 
 public class PerformanceStatsModule extends ReactContextBaseJavaModule {
     private final PerformanceStatsImpl performanceStats;
@@ -28,6 +30,12 @@ public class PerformanceStatsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void stop() {
         performanceStats.stop();
+    }
+
+    @ReactMethod
+    public void getPerThreadCPUUsage(Promise promise) {
+       WritableMap stats = performanceStats.getPerThreadCPUUsage();
+       promise.resolve(stats);
     }
 
     @ReactMethod

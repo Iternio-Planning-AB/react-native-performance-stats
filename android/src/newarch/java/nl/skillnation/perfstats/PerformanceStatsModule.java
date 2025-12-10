@@ -2,6 +2,7 @@ package nl.skillnation.perfstats;
 
 import androidx.annotation.NonNull;
 
+import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactMethod;
 
@@ -29,6 +30,11 @@ public class PerformanceStatsModule extends NativePerformanceStatsSpec {
     @ReactMethod
     public void stop() {
         performanceStats.stop();
+    }
+
+    @Override
+    public void getPerThreadCPUUsage(Promise promise) {
+        promise.resolve(performanceStats.getPerThreadCPUUsage());
     }
 
     @ReactMethod

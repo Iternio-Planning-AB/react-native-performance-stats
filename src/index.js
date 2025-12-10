@@ -1,5 +1,5 @@
 // @flow
-import { NativeModules, NativeEventEmitter } from 'react-native'
+import { NativeModules, NativeEventEmitter, Platform } from 'react-native'
 
 const isTurboModuleEnabled = global.__turboModuleProxy != null;
 
@@ -15,5 +15,12 @@ export default {
   addListener: (listenerCallback) => {
     const eventEmitter = new NativeEventEmitter(PerformanceStatsNativeModule);
     return eventEmitter.addListener("performanceStatsUpdate", listenerCallback);
-  }
+  },
+  getPerThreadCPUUsage: () => {
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
+      return PerformanceStatsNativeModule.getPerThreadCPUUsage();
+    }
+
+    return Promise.reject(`getPerThreadCPUUsage is not supported on this platform ${Platform.OS}`);
+  },
 };

@@ -1,13 +1,17 @@
 buildscript {
+    ext {
+        kotlinVersion = "1.9.25"
+    }
     ext.safeExtGet = {prop, fallback ->
         rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
     }
     repositories {
         google()
-	gradlePluginPortal()
+	    gradlePluginPortal()
     }
     dependencies {
         classpath("com.android.tools.build:gradle:7.0.4")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
     }
 }
 
@@ -16,16 +20,16 @@ def isNewArchitectureEnabled() {
 }
 
 apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
 if (isNewArchitectureEnabled()) {
     apply plugin: 'com.facebook.react'
 }
 
 android {
-    compileSdkVersion safeExtGet('compileSdkVersion', 31)
-
     defaultConfig {
+        compileSdk safeExtGet('compileSdkVersion', 35)
         minSdkVersion safeExtGet('minSdkVersion', 21)
-        targetSdkVersion safeExtGet('targetSdkVersion', 31)
+        targetSdkVersion safeExtGet('targetSdkVersion', 35)
         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
     }
 
@@ -37,6 +41,9 @@ android {
                 java.srcDirs += ['src/oldarch']
             }
         }
+    }
+    kotlinOptions {
+        jvmTarget = '17'
     }
 }
 
@@ -51,6 +58,7 @@ repositories {
 
 dependencies {
     implementation 'com.facebook.react:react-native:+'
+    implementation 'androidx.core:core-ktx:1.16.0'
 }
 
 if (isNewArchitectureEnabled()) {

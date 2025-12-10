@@ -1,6 +1,7 @@
 #import "PerformanceStats.h"
 #import "FPSTracker.h"
 #import <mach/mach.h>
+#import <pthread.h>
 #import <React/RCTBridge+Private.h>
 #import <React/RCTBridge.h>
 #import <React/RCTUIManager.h>
@@ -88,6 +89,145 @@ float cpu_usage()
     return tot_cpu;
 }
 
+NSDictionary* threadStats(double appLaunchTime,
+                          double totalMemory,
+                          NSArray<NSString *> *threadNameFilter,
+                          NSMutableDictionary<NSNumber*,
+                          NSDictionary*> *lastThreadTimes,
+                          thread_act_t jsThread)
+{
+    thread_act_array_t threadList;
+    mach_msg_type_number_t threadCount = 0;
+    
+    kern_return_t kr = task_threads(mach_task_self(),
+                                    &threadList,
+                                    &threadCount);
+    if (kr != KERN_SUCCESS) {
+        return nil;
+    }
+    
+    NSMutableArray *result = [NSMutableArray array];
+    double now = [NSProcessInfo processInfo].systemUptime;
+    double uptime = now - appLaunchTime;
+    double usedMemory = RCTGetResidentMemorySize();
+    
+    NSMutableSet<NSNumber *> *activeThreadIds = [NSMutableSet set];
+    
+    for (int i = 0; i < threadCount; i++) {
+        thread_act_t thread = threadList[i];
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t infoCount = THREAD_INFO_MAX;
+        
+        kr = thread_info(thread,
+                         THREAD_BASIC_INFO,
+                         (thread_info_t)&info,
+                         &infoCount);
+        if (kr != KERN_SUCCESS) {
+            continue;
+        }
+        
+        if ((info.flags & TH_FLAGS_IDLE) != 0) {
+            continue;
+        }
+        
+        double userTime = (double)info.user_time.seconds + (double)info.user_time.microseconds / 1e6;
+        double systemTime = (double)info.system_time.seconds + (double)info.system_time.microseconds / 1e6;
+        
+        NSString *threadName = nil;
+        
+        if (jsThread == thread) {
+            threadName = @"com.facebook.react.JavaScript";
+        } else {
+            pthread_t pthread = pthread_from_mach_thread_np(thread);
+            char name[256] = {
+                0
+            };
+            
+            if (pthread != NULL) {
+                pthread_getname_np(pthread,
+                                   name,
+                                   sizeof(name));
+            }
+            
+            threadName = [NSString stringWithUTF8String:name];
+        }
+        
+        if (threadName == nil || [threadName length] == 0) {
+            threadName = @"(unnamed)";
+        }
+        
+        if (threadNameFilter != nil && ![threadNameFilter containsObject:threadName] && i > 0) {
+            continue;
+        }
+        
+        NSNumber *threadIdKey = @(thread);
+        [activeThreadIds addObject:threadIdKey];
+        
+        NSDictionary *last = lastThreadTimes[threadIdKey];
+        
+        id deltaTime = [NSNull null];
+        id deltaUser = [NSNull null];
+        id deltaSystem = [NSNull null];
+        double threadLifetime = 0;
+        
+        if (last == nil) {
+            lastThreadTimes[threadIdKey] = @{
+                @"user": @(userTime),
+                @"system": @(systemTime),
+                @"timestamp": @(now),
+                @"first_seen": @(now)
+            };
+        } else {
+            double lastUser = [last[@"user"] doubleValue];
+            double lastSystem = [last[@"system"] doubleValue];
+            double lastTimestamp = [last[@"timestamp"] doubleValue];
+            double firstSeen = [last[@"first_seen"] doubleValue];
+
+            deltaTime = @(now - lastTimestamp);
+            deltaUser = @(userTime - lastUser);
+            deltaSystem = @(systemTime - lastSystem);
+            threadLifetime = now - firstSeen;
+
+            NSMutableDictionary *updated = [last mutableCopy];
+            updated[@"user"] = @(userTime);
+            updated[@"system"] = @(systemTime);
+            updated[@"timestamp"] = @(now);
+            lastThreadTimes[threadIdKey] = updated;
+        }
+        
+        [result addObject:@{
+            @"threadId": threadIdKey,
+            @"threadName": threadName,
+            @"totalUserTimeSeconds": @(userTime),
+            @"totalSystemTimeSeconds": @(systemTime),
+            @"totalTimeSeconds": @(threadLifetime),
+            @"deltaUserTimeSeconds": deltaUser,
+            @"deltaSystemTimeSeconds": deltaSystem,
+            @"deltaTimeSeconds": deltaTime,
+        }];
+    }
+    
+    NSSet<NSNumber *> *allStoredThreadIds = [NSSet setWithArray:lastThreadTimes.allKeys];
+    
+    for (NSNumber *threadId in allStoredThreadIds) {
+        if (![activeThreadIds containsObject:threadId]) {
+            [lastThreadTimes removeObjectForKey:threadId];
+        }
+    }
+    
+    vm_deallocate(mach_task_self(),
+                  (vm_address_t)threadList,
+                  threadCount * sizeof(thread_t));
+
+    return @{
+        @"threads": result,
+        @"uptimeSeconds": @(uptime),
+        @"ramTotalBytes": @(totalMemory),
+        @"ramUsedBytes": @(usedMemory),
+        @"ramLoadPercent": @((usedMemory / totalMemory) * 100.0)
+    };
+}
+
 #pragma Module implementation
 
 @implementation PerformanceStats {
@@ -98,6 +238,23 @@ float cpu_usage()
     
     CADisplayLink *_uiDisplayLink;
     CADisplayLink *_jsDisplayLink;
+    
+    double appLaunchTime;
+    double totalMemory;
+    NSMutableDictionary<NSNumber*, NSDictionary*> *lastThreadTimes;
+    
+    thread_act_t _jsThread;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+      appLaunchTime = [NSProcessInfo processInfo].systemUptime;
+      totalMemory = [NSProcessInfo processInfo].physicalMemory;
+      lastThreadTimes = [NSMutableDictionary dictionary];
+      _jsThread = MACH_PORT_NULL;
+  }
+  return self;
 }
 
 RCT_EXPORT_MODULE(PerformanceStats)
@@ -162,7 +319,7 @@ RCT_EXPORT_MODULE(PerformanceStats)
   [tracker onTick:displayLink.timestamp];
 }
 
-RCT_REMAP_METHOD(start, withCpu:(NSInteger*)withCpu)
+RCT_REMAP_METHOD(start, withCpu:(BOOL)withCpu)
 {
     _isRunning = true;
     _uiFPSTracker= [[FPSTracker alloc] init];
@@ -177,11 +334,15 @@ RCT_REMAP_METHOD(start, withCpu:(NSInteger*)withCpu)
     // Get FPS for JS thread
     [self.bridge
         dispatchBlock:^{
-          self->_jsDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(threadUpdate:)];
-          [self->_jsDisplayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+          self->_jsDisplayLink =
+              [CADisplayLink displayLinkWithTarget:self
+                                          selector:@selector(threadUpdate:)];
+          [self->_jsDisplayLink addToRunLoop:[NSRunLoop currentRunLoop]
+                                     forMode:NSRunLoopCommonModes];
+          thread_act_t jsThread = mach_thread_self();
+          self->_jsThread = jsThread;
         }
                 queue:RCTJSThread];
-    
 }
 
 RCT_EXPORT_METHOD(stop)
@@ -195,6 +356,26 @@ RCT_EXPORT_METHOD(stop)
     
     _uiDisplayLink = nil;
     _jsDisplayLink = nil;
+    _jsThread = MACH_PORT_NULL;
+}
+
+RCT_EXPORT_METHOD(getPerThreadCPUUsage:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    
+    NSDictionary *stats = threadStats(appLaunchTime,
+                                      totalMemory,
+                                      nil,
+                                      lastThreadTimes,
+                                      _jsThread);
+    
+    if (stats == nil) {
+                reject(@"E_CPU",
+                       @"Failed to retrieve thread list",
+                       nil);
+    }
+  
+    resolve(stats);
 }
 
 // Thanks to this guard, we won't compile this code when we build for the old architecture.
